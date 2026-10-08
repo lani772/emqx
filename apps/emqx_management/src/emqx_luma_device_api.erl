@@ -1,0 +1,32 @@
+%% LUMA Device Platform - Phase 1 API foundation.
+-module(emqx_luma_device_api).
+-behaviour(minirest_api).
+-include_lib("hocon/include/hoconsc.hrl").
+-include_lib("typerefl/include/types.hrl").
+-include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx_utils/include/emqx_api_key_scopes.hrl").
+-export([api_spec/0, paths/0, schema/1, fields/1, namespace/0, scopes/0]).
+-export([devices/2, device/2, command/2, status/2]).
+-define(TAGS, [<<"LUMA Devices">>]).
+-define(DEFAULT_QOS, 1).
+namespace() -> undefined.
+api_spec() -> emqx_dashboard_swagger:spec(?MODULE, #{check_schema => true}).
+scopes() -> ?SCOPE_PUBLISH.
+paths() -> ["/devices", "/devices/:deviceid", "/devices/:deviceid/commands", "/devices/:deviceid/status"].
+schema("/devices") -> #{'operationId' => devices, get => #{description => <<"List ESP32 devices currently connected to EMQX.">>, tags => ?TAGS, parameters => [hoconsc:ref(emqx_dashboard_swagger, page), hoconsc:ref(emqx_dashboard_swagger, limit)], responses => #{200 => hoconsc:mk(map(), #{desc => <<"Connected LUMA devices.">>})}}};
+schema("/devices/:deviceid") -> #{'operationId' => device, get => #{description => <<"Get a connected LUMA device.">>, tags => ?TAGS, parameters => [{deviceid, hoconsc:mk(binary(), #{in => path, required => true})}], responses => #{200 => hoconsc:mk(map(), #{}), 404 => hoconsc:mk(map(), #{})}}};
+schema("/devices/:deviceid/commands") -> #{'operationId' => command, post => #{description => <<"Send a command to a connected LUMA device.">>, tags => ?TAGS, parameters => [{deviceid, hoconsc:mk(binary(), #{in => path, required => true})}], 'requestBody' => hoconsc:ref(?MODULE, command_request), responses => #{202 => hoconsc:ref(?MODULE, command_response), 400 => hoconsc:mk(map(), #{}), 404 => hoconsc:mk(map(), #{}), 503 => hoconsc:mk(map(), #{})}}};
+schema("/devices/:deviceid/status") -> #{'operationId' => status, get => #{description => <<"Get the connection status of a LUMA device.">>, tags => ?TAGS, parameters => [{deviceid, hoconsc:mk(binary(), #{in => path, required => true})}], responses => #{200 => hoconsc:ref(?MODULE, status_response), 404 => hoconsc:mk(map(), #{})}}}.
+fields(command_request) -> [{command, hoconsc:mk(binary(), #{required => true, desc => <<"Command name.">>, example => <<"set_power">> )}, {params, hoconsc:mk(map(), #{required => false, default => #{}, desc => <<"Command parameters.">>})}, {qos, hoconsc:mk(emqx_schema:qos(), #{required => false, default => ?DEFAULT_QOS})}, {retain, hoconsc:mk(boolean(), #{required => false, default => false})}];
+fields(command_response) -> [{command_id, hoconsc:mk(binary(), #{desc => <<"Command identifier.">>)}, {device_id, hoconsc:mk(binary(), #{desc => <<"Device identifier.">>)}, {status, hoconsc:mk(binary(), #{desc => <<"Initial command status.">>)}, {topic, hoconsc:mk(binary(), #{desc => <<"MQTT command topic.">>)}, {response_topic, hoconsc:mk(binary(), #{desc => <<"Command response topic.">>)}];
+fields(status_response) -> [{device_id, hoconsc:mk(binary(), #{desc => <<"Device identifier.">>)}, {status, hoconsc:mk(binary(), #{desc => <<"online or offline">>)}, {last_seen_at, hoconsc:mk(integer(), #{desc => <<"Last broker-observed activity in Unix milliseconds.">>})}].
+devices(get, #{query_string := QString}) -> case emqx_mgmt_api_clients:clients(get, #{query_string => #{<<"like_clientid">> => <<"esp32-%">>, <<"page">> => maps:get(<<"page">>, QString, 1), <<"limit">> => maps:get(<<"limit">>, QString, emqx_mgmt:default_row_limit())}}) of {200, #{data := Data, meta := Meta}} -> {200, #{data => [device_view(D) || D <- Data], meta => Meta}}; Other -> Other end.
+device(get, #{bindings := #{deviceid := DeviceId}}) -> case validate_device_id(DeviceId) of ok -> emqx_mgmt_api_clients:client(get, #{bindings => #{clientid => DeviceId}}); {error, Message} -> {400, #{code => <<"INVALID_DEVICE_ID">>, message => Message}} end.
+status(get, #{bindings := #{deviceid := DeviceId}}) -> case emqx_mgmt_api_clients:client(get, #{bindings => #{clientid => DeviceId}}) of {200, Client} -> {200, #{device_id => DeviceId, status => <<"online">>, last_seen_at => maps:get(last_connected_at, Client, 0)}}; {404, _} -> {404, #{code => <<"NOT_FOUND">>, message => <<"Device is offline or not found">>}}; Other -> Other end.
+command(post, #{bindings := #{deviceid := DeviceId}, body := Body}) -> case validate_device_id(DeviceId) of ok -> publish_command(DeviceId, Body); {error, Message} -> {400, #{code => <<"INVALID_DEVICE_ID">>, message => Message}} end.
+validate_device_id(<<>>) -> {error, <<"deviceid must not be empty">>};
+validate_device_id(DeviceId) when byte_size(DeviceId) > 128 -> {error, <<"deviceid is too long">>};
+validate_device_id(DeviceId) -> case binary:match(DeviceId, <<"/">>) of nomatch -> ok; _ -> {error, <<"deviceid must not contain /">>} end.
+publish_command(DeviceId, Body) -> Command = maps:get(<<"command">>, Body, undefined), case Command of undefined -> {400, #{code => <<"VALIDATION_ERROR">>, message => <<"command is required">>}}; <<>> -> {400, #{code => <<"VALIDATION_ERROR">>, message => <<"command is required">>}}; _ -> CommandId = emqx_guid:to_hexstr(emqx_guid:gen()), Params = maps:get(<<"params">>, Body, #{}), QoS = maps:get(<<"qos">>, Body, ?DEFAULT_QOS), Retain = maps:get(<<"retain">>, Body, false), Topic = <<"luma/devices/", DeviceId/binary, "/command">>, ResponseTopic = <<"luma/devices/", DeviceId/binary, "/command/", CommandId/binary, "/response">>, Payload = emqx_utils_json:encode(#{<<"command_id">> => CommandId, <<"device_id">> => DeviceId, <<"command">> => Command, <<"params">> => Params, <<"response_topic">> => ResponseTopic, <<"timestamp">> => erlang:system_time(millisecond)}), Message = emqx_message:make(?EXT_TRACE__HTTP_API_INTERNAL_CLIENTID, QoS, Topic, Payload, #{retain => Retain}, #{}), case emqx_mgmt:publish(Message) of [] -> {503, #{code => <<"DEVICE_OFFLINE">>, message => <<"No matching device subscriber is connected">>}}; _ -> {202, #{command_id => CommandId, device_id => DeviceId, status => <<"queued">>, topic => Topic, response_topic => ResponseTopic}} end end.
+device_view(Device) when is_map(Device) -> Device#{device_id => maps:get(clientid, Device, maps:get(<<"clientid">>, Device, undefined))};
+device_view(Device) -> Device.

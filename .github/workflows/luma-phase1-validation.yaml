@@ -1,0 +1,37 @@
+name: LUMA Phase 1 Validation
+
+on:
+  push:
+    branches:
+      - feature/luma-device-platform-phase1
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    container: ghcr.io/emqx/emqx-builder/6.1-4:1.19.1-28.4.1-3-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare build tools
+        run: |
+          set -eux
+          make ensure-rebar3
+      - name: Compile test profile
+        run: |
+          set -eux
+          make test-compile
+      - name: Check API scopes
+        run: |
+          set -eux
+          ./scripts/check-api-scopes.sh
+      - name: Run LUMA API suite
+        run: |
+          set -eux
+          PROFILE=emqx-enterprise-test MIX_ENV=emqx-enterprise-test mix ct --suites apps/emqx_management/test/emqx_luma_device_api_SUITE.erl
