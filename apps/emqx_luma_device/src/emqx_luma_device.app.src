@@ -1,0 +1,6 @@
+{application, emqx_luma_device,
+ [{description, "LUMA device registry and registration foundation"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [kernel, stdlib, emqx, emqx_management, emqx_utils]},
+  {env, []}]}.
