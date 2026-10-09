@@ -77,3 +77,21 @@ For device ID `{deviceId}`:
 **Tests:** NOT RUN. No tests are claimed as passing.
 
 **Next action:** complete source/version and CI discovery, then run the supported build in GitHub Actions or a local/container environment before implementing the gateway plugin.
+
+
+## Follow-up source inspection (read-only)
+
+- `PLUGIN.md` confirms in-monorepo plugins belong under `plugins/`; plugin apps require their own `mix.exs` and `VERSION`. The repository uses Mix for compile/test/package workflows.
+- `plugins/emqx_offline_messages/README.md` documents persistence of selected QoS 1/2 messages when no matching subscriber is online, with Redis and MySQL backends. Its documented commands are `make` and `make plugins/emqx_offline_messages-ct`. This is not yet a recommendation to enable it; delivery semantics and duplicate handling must be tested before choosing it over a separate queue.
+- `plugins/emqx_username_quota/README.md` documents per-username session quotas and notes that namespace-based limits may be possible with `client_attrs.tns`; evaluate built-in namespace/client attributes before adopting the plugin.
+- `plugins/emqx_sync_request/README.md` documents a REST-to-MQTT request helper for exactly one online, non-shared subscriber. Requests are node-local, bypass the normal publish pipeline, and do not persist inflight state. Do not make this the durable command/ack subsystem without addressing those limitations.
+- `.github/workflows/_push-entrypoint.yaml` runs on pushes to selected branches (including `master`, release branches, and `ci/**`) and supports manual dispatch. The new `feature/luma-gateway-phase0` branch is not covered by its listed push branch patterns, and no workflow-dispatch action is available through the current connected GitHub interface.
+- Root `docker-compose.yml`, root `VERSION`, root `rebar.config`, and the guessed `apps/emqx/src/emqx.app.src` path were not found. The exact release version therefore remains unverified from these inspected paths; do not treat upstream 6.1.5 as confirmed to match this repository's current source.
+
+## Updated Phase 0 status
+
+- [x] Read the plugin development guide.
+- [x] Inspect README-level semantics for offline messages, username quota, and sync request.
+- [x] Inspect the repository's push workflow triggers.
+- [ ] Identify the exact version from the repository's actual version source and compare it with a stable GA tag.
+- [ ] Run the supported compile and test commands in an environment that has the required Erlang/OTP and Elixir toolchain.
